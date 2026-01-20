@@ -1,0 +1,8 @@
+aiogram==3.17.0
+gspread==6.1.2
+gspread-asyncio==2.0.0
+google-auth==2.32.0
+apscheduler==3.10.4
+pydantic-settings==2.3.4
+python-dotenv==25.1.1
+oauth2client==4.1.3
