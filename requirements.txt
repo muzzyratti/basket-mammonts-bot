@@ -4,5 +4,5 @@ gspread-asyncio==2.0.0
 google-auth==2.32.0
 apscheduler==3.10.4
 pydantic-settings==2.3.4
-python-dotenv==25.1.1
+python-dotenv
 oauth2client==4.1.3

@@ -3,8 +3,10 @@ import itertools
 from services.google_sheets import sheets
 
 class Player:
-    def __init__(self, name, rating=3.0, role="Универсал", height=180, weight=80):
+    # Добавил аргумент nick в __init__
+    def __init__(self, name, nick="", rating=3.0, role="Универсал", height=180, weight=80):
         self.name = name
+        self.nick = nick  # Сохраняем ник
         # Парсим рейтинг
         try:
             self.rating = float(str(rating).split(" ")[0])
@@ -17,9 +19,6 @@ class Player:
         self.weight = int(weight) if weight and str(weight).isdigit() else 80
 
         # Упрощаем роль для алгоритма (Нормализация)
-        # "Большой (Центр)" -> "big"
-        # "Снайпер" -> "sniper"
-        # Остальные -> "other"
         r_lower = role.lower()
         if "большой" in r_lower or "центр" in r_lower:
             self.simple_role = "big"
@@ -42,18 +41,22 @@ async def form_teams(game_date: str):
 
     active_players = []
     for v in votes:
+        # Достаем ник из голосов
+        current_nick = v.get('nick', '')
+        
         key = v['nick'] if v['nick'] in stats_db else v['name']
         if key in stats_db:
             p_data = stats_db[key]
             player = Player(
-                name=v['name'], 
+                name=v['name'],
+                nick=current_nick,  # Передаем ник
                 rating=p_data['rating'], 
                 role=p_data['role'], 
                 height=p_data['height'], 
                 weight=p_data['weight']
             )
         else:
-            player = Player(name=v['name'], rating=3.0, role="Новичок")
+            player = Player(name=v['name'], nick=current_nick, rating=3.0, role="Новичок")
         active_players.append(player)
 
     count = len(active_players)
@@ -101,7 +104,6 @@ async def form_teams(game_date: str):
     best_teams = []
     min_total_penalty = 100000 
     
-    # Делаем больше итераций, так как критериев стало больше
     iterations = 10000 
     
     for _ in range(iterations): 
@@ -119,55 +121,38 @@ async def form_teams(game_date: str):
         history_violations = 0
 
         for team in current_teams:
-            # Средние показатели
             ratings.append(sum(p.rating for p in team) / len(team))
             heights.append(sum(p.height for p in team) / len(team))
             weights.append(sum(p.weight for p in team) / len(team))
             
-            # Подсчет ролей
             bigs_counts.append(sum(1 for p in team if p.simple_role == 'big'))
             snipers_counts.append(sum(1 for p in team if p.simple_role == 'sniper'))
             
-            # Проверка истории
             team_names = sorted([p.name for p in team])
             for pair in itertools.combinations(team_names, 2):
                 if pair in forbidden_pairs:
                     history_violations += 1
 
         # --- РАСЧЕТ ШТРАФОВ ---
-        
-        # 1. Рейтинг (самое важное)
         diff_rating = max(ratings) - min(ratings)
-        # Вес: 1.0 (база)
-        
-        # 2. История (Критично)
-        # Вес: 2.0 за каждую пару (это много)
         penalty_history = history_violations * 2.0
         
-        # 3. Роли (Баланс состава)
-        # Хотим, чтобы разница в количестве больших была 0 или 1.
-        # Если разница > 1 (например 3 бига vs 0 бигов) -> ШТРАФ
         diff_bigs = max(bigs_counts) - min(bigs_counts)
         penalty_bigs = 0
         if diff_bigs > 1:
-            penalty_bigs = 1.5 # Серьезный штраф за дисбаланс под кольцом
+            penalty_bigs = 1.5 
             
         diff_snipers = max(snipers_counts) - min(snipers_counts)
         penalty_snipers = 0
         if diff_snipers > 1:
-            penalty_snipers = 0.8 # Чуть меньший штраф, но тоже важно
+            penalty_snipers = 0.8
             
-        # 4. Физика (Рост и Вес)
-        # Разница в 1 см не так страшна, как разница в 1 балл рейтинга.
-        # Нормализация: делим на коэффициент.
-        # Допустим, разница 5 см = 0.5 штрафа. Значит делим на 10.
         diff_height = max(heights) - min(heights)
         penalty_height = diff_height / 15.0 
         
         diff_weight = max(weights) - min(weights)
         penalty_weight = diff_weight / 20.0
 
-        # ИТОГОВАЯ ЦЕЛЕВАЯ ФУНКЦИЯ
         total_penalty = (
             diff_rating + 
             penalty_history + 
@@ -181,7 +166,6 @@ async def form_teams(game_date: str):
             min_total_penalty = total_penalty
             best_teams = current_teams
             
-            # Если нашли "золотое сечение", выходим чуть раньше
             if total_penalty < 0.15:
                 break
 
@@ -197,21 +181,25 @@ async def form_teams(game_date: str):
     for i, team in enumerate(best_teams):
         t_name = team_names[i]
         
-        # Считаем средние для отчета
         avg_r = sum(p.rating for p in team) / len(team)
         avg_h = sum(p.height for p in team) / len(team)
         avg_w = sum(p.weight for p in team) / len(team)
         
-        # Красивый список с ролями
-        players_list_html = "\n".join([f"- {p.name} (<i>{p.role}, {p.rating}</i>)" for p in team])
+        # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Добавляем никнейм в список ---
+        players_list_html = []
+        for p in team:
+            # Если ник есть, добавляем пробел перед ним, иначе пустота
+            nick_display = f" {p.nick}" if p.nick else ""
+            players_list_html.append(f"- {p.name}{nick_display} (<i>{p.role}, {p.rating}</i>)")
+            
+        players_list_str = "\n".join(players_list_html)
+        # ----------------------------------------------------
         
-        # Добавляем инфо о физике в заголовок команды
         stats_line = f"Ср. рейтинг: {avg_r:.2f} | Ср. рост: {avg_h:.0f}см | Ср. вес: {avg_w:.0f}кг\n"
         
-        block_html = f"<b>{t_name}</b>\n📊 <i>{stats_line}</i>\n{players_list_html}\n\n"
+        block_html = f"<b>{t_name}</b>\n📊 <i>{stats_line}</i>\n{players_list_str}\n\n"
         report_html += block_html
         
-        # Для таблицы (чистый текст)
         players_clean = "\n".join([f"{p.name} ({p.role})" for p in team])
         
         teams_data_for_sheet.append({
