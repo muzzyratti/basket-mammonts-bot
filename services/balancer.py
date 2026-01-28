@@ -168,8 +168,9 @@ async def form_teams(game_date: str):
         diff_snipers = max(snipers_counts) - min(snipers_counts)
         penalty_snipers = 0 if diff_snipers <= 1 else 0.8
             
-        diff_height = (max(heights) - min(heights)) / 15.0 
-        diff_weight = (max(weights) - min(weights)) / 20.0
+        # ИСПРАВЛЕНИЕ ОШИБКИ ЗДЕСЬ (назвал переменные правильно)
+        penalty_height = (max(heights) - min(heights)) / 15.0 
+        penalty_weight = (max(weights) - min(weights)) / 20.0
 
         total_penalty = (diff_rating + penalty_history + penalty_bigs + 
                          penalty_snipers + penalty_height + penalty_weight)
