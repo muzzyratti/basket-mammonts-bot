@@ -29,17 +29,6 @@ async def cmd_make_teams(message: types.Message):
             # Отправляем с HTML (теперь там нет конфликтующих **)
             await message.answer(report, parse_mode="HTML")
             
-            if message.chat.id != config.GROUP_CHAT_ID:
-                try:
-                    await message.bot.send_message(
-                        chat_id=config.GROUP_CHAT_ID,
-                        text=report,
-                        parse_mode="HTML"
-                    )
-                    await message.answer("✅ Отправлено в общий чат.")
-                except Exception as e:
-                    pass
-            
     except Exception as e:
         import traceback
         traceback.print_exc()

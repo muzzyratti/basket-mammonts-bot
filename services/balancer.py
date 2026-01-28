@@ -20,7 +20,7 @@ class Player:
         self.height = int(height) if height and str(height).isdigit() else 180
         self.weight = int(weight) if weight and str(weight).isdigit() else 80
 
-        # Упрощаем роль
+        # Упрощаем роль для алгоритма
         r_lower = role.lower()
         if "большой" in r_lower or "центр" in r_lower:
             self.simple_role = "big"
@@ -35,7 +35,6 @@ class Player:
 def parse_signup_time(time_str):
     """
     Превращает строку времени из Гугла в объект datetime для сортировки.
-    Формат: 28.01.2026 20:19:40
     """
     if not time_str:
         return datetime.max 
@@ -59,7 +58,7 @@ def parse_signup_time(time_str):
 async def form_teams(game_date: str):
     print(f"📥 Начинаем сбор команд на {game_date}")
     
-    # 1. Голоса (Приходят как есть в таблице - Новые сверху!)
+    # 1. Голоса
     votes = await sheets.get_votes_for_date(game_date)
     if not votes:
         return None, "❌ Никто не записался."
@@ -69,10 +68,11 @@ async def form_teams(game_date: str):
 
     active_players = []
     
-    # --- СБОР ДАННЫХ ---
+    # --- СБОР ДАННЫХ И МАТЧИНГ ---
     for v in votes:
-        current_nick = v.get('nick', '').strip()
-        current_tg_name = v['name'].strip()
+        # Данные из голосования (Telegram)
+        vote_nick = v.get('nick', '').strip().replace("@", "").lower() # Чистим ник
+        vote_name = v['name'].strip()
         
         # Ищем время
         signup_time_str = ""
@@ -81,42 +81,42 @@ async def form_teams(game_date: str):
                 signup_time_str = val
                 break
         
-        # 1. МАТЧИНГ ПО НИКУ: Ищем игрока в базе по нику (v['nick'])
-        key = current_nick if current_nick in stats_db else current_tg_name
-        
-        # Данные по умолчанию (если не найдем в базе)
-        real_name = current_tg_name
+        # Данные по умолчанию
+        final_name = vote_name # По дефолту имя из ТГ
         rating = 3.0
         role = "Новичок"
         height = 180
         weight = 80
         
-        if key in stats_db:
-            p_data = stats_db[key]
+        # Поиск игрока в базе (stats_db)
+        # Ключи в stats_db у тебя хранятся и как ники (без @), и как имена
+        
+        p_data = None
+        
+        # Попытка 1: По нику
+        if vote_nick and vote_nick in stats_db:
+             p_data = stats_db[vote_nick]
+        # Попытка 2: По имени (если нет ника или не нашлось)
+        elif vote_name in stats_db:
+             p_data = stats_db[vote_name]
+             
+        # Если нашли профиль в Мамонтах
+        if p_data:
             rating = p_data.get('rating', 3.0)
             role = p_data.get('role', 'Универсал')
             height = p_data.get('height', 180)
             weight = p_data.get('weight', 80)
             
-            # 2. ПОДТЯГИВАНИЕ ИМЕНИ: Ищем поле "Имя" в базе
-            found_name = False
-            if 'Имя' in p_data and p_data['Имя']:
-                 real_name = str(p_data['Имя']).strip()
-                 found_name = True
-            
-            # Запасной поиск имени (если вдруг опечатка в заголовке)
-            if not found_name:
-                for db_key, db_val in p_data.items():
-                    clean_key = str(db_key).lower().strip()
-                    if clean_key in ['имя', 'name', 'fio', 'фио']:
-                        if db_val:
-                            real_name = str(db_val).strip()
-                            found_name = True
-                            break
+            # --- ГЛАВНОЕ: БЕРЕМ ИМЯ ИЗ ТАБЛИЦЫ ---
+            # Ищем поле 'Имя' или 'name' в данных профиля
+            db_name = p_data.get('Имя') or p_data.get('name')
+            if db_name:
+                final_name = str(db_name).strip()
+            # -------------------------------------
 
         player = Player(
-            name=real_name,     # <-- СЮДА попадет имя из листа "Мамонты"
-            nick=current_nick,  # <-- СЮДА попадет ник
+            name=final_name,    # Теперь здесь строго имя из базы (если нашли)
+            nick=v.get('nick', ''), # Сохраняем оригинальный ник для дисплея
             rating=rating, 
             role=role, 
             height=height, 
@@ -125,12 +125,26 @@ async def form_teams(game_date: str):
         )
         active_players.append(player)
 
-    # --- СОРТИРОВКА ПО ВРЕМЕНИ (Кто раньше встал - того и тапки) ---
+    # --- СОРТИРОВКА ПО ВРЕМЕНИ ---
+    # Важно: Сортируем ДО отсечения резерва
     active_players.sort(key=lambda x: parse_signup_time(x.raw_time))
 
     count = len(active_players)
     if count < 4:
          return None, f"⚠ Мало игроков: {count}."
+
+    # --- НАРЕЗКА РЕЗЕРВА (СТРОГО 18) ---
+    reserve_pool = []
+    LIMIT = 18
+    
+    if count > LIMIT:
+        # Все кто после 18-го — в резерв
+        reserve_pool = active_players[LIMIT:] 
+        active_players = active_players[:LIMIT]
+        print(f"✂️ Отрезали {len(reserve_pool)} чел. в резерв.")
+
+    # Обновляем кол-во активных после среза
+    active_count = len(active_players)
 
     # --- АНАЛИЗ ИСТОРИИ ---
     print("⏳ Анализируем историю игр...")
@@ -149,21 +163,12 @@ async def form_teams(game_date: str):
                 forbidden_pairs = forbidden_pairs.intersection(current_pairs)
 
     # --- КОЛИЧЕСТВО КОМАНД ---
+    # Логика простая: если нас 18 (после среза) или около того -> 3 команды
+    # Если меньше 15 -> 2 команды
     num_teams = 2
-    if count >= 18:
-        num_teams = 3
-    elif 15 <= count < 18:
-        num_teams = 3
-    elif count == 9:
+    if active_count >= 15:
         num_teams = 3
     
-    # --- НАРЕЗКА РЕЗЕРВА ---
-    reserve_pool = []
-    if num_teams == 3 and count > 18:
-        # Режем хвост списка (там теперь самые "поздние" игроки)
-        reserve_pool = active_players[18:] 
-        active_players = active_players[:18]
-
     # --- БАЛАНСИРОВКА ---
     best_teams = []
     min_total_penalty = 100000 
@@ -175,6 +180,7 @@ async def form_teams(game_date: str):
         random.shuffle(players_pool)
         
         current_teams = [players_pool[i::num_teams] for i in range(num_teams)]
+        # Проверка на пустые команды (на всякий случай)
         if any(len(t) == 0 for t in current_teams): continue
 
         ratings = []
@@ -222,7 +228,10 @@ async def form_teams(game_date: str):
     team_names = all_names[:num_teams]
     
     report_html = f"🏀 <b>Составы на {game_date}</b>\n"
-    report_html += f"Всего в заявке: {count}\n\n"
+    report_html += f"Игроков в основе: {active_count}\n"
+    if reserve_pool:
+        report_html += f"В резерве: {len(reserve_pool)}\n"
+    report_html += "\n"
     
     teams_data_for_sheet = []
 
@@ -235,7 +244,8 @@ async def form_teams(game_date: str):
         
         players_list_html = []
         for p in team:
-            # 3. ВЫВОД: Здесь берется имя из базы (p.name) и ник (p.nick)
+            # Имя теперь берется из self.name (которое мы взяли из базы)
+            # Ник добавляем для справки, если он есть
             nick_display = f" {p.nick}" if p.nick else ""
             players_list_html.append(f"- {p.name}{nick_display} (<i>{p.role}, {p.rating}</i>)")
             
@@ -257,7 +267,7 @@ async def form_teams(game_date: str):
 
     if reserve_pool:
         res_list = ", ".join([p.name for p in reserve_pool])
-        report_html += f"📓 <b>Резерв:</b> {res_list}\n"
+        report_html += f"📓 <b>Резерв ({len(reserve_pool)}):</b> {res_list}\n"
         teams_data_for_sheet.append({
             "date": game_date,
             "team_name": "Резерв",
