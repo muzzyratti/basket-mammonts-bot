@@ -36,7 +36,7 @@ async def form_teams(game_date: str):
     if not votes:
         return None, "❌ Никто не записался."
 
-    # 2. Статистика
+    # 2. Статистика (Лист "Мамонты")
     stats_db = await sheets.get_players_stats()
 
     active_players = []
@@ -44,11 +44,18 @@ async def form_teams(game_date: str):
         # Достаем ник из голосов
         current_nick = v.get('nick', '')
         
+        # Определяем ключ для поиска в базе
         key = v['nick'] if v['nick'] in stats_db else v['name']
+        
         if key in stats_db:
             p_data = stats_db[key]
+            
+            # --- ИЗМЕНЕНИЕ: Берем имя из базы (Лист Мамонты), а не из голосования ---
+            # Пробуем найти поле 'Имя', если нет - 'name', если нет - берем из голосования
+            real_name = p_data.get('Имя', p_data.get('name', v['name']))
+            
             player = Player(
-                name=v['name'],
+                name=real_name,     # Имя из базы
                 nick=current_nick,  # Передаем ник
                 rating=p_data['rating'], 
                 role=p_data['role'], 
@@ -56,7 +63,9 @@ async def form_teams(game_date: str):
                 weight=p_data['weight']
             )
         else:
+            # Если игрока нет в базе, берем имя из голосования (Телеграм)
             player = Player(name=v['name'], nick=current_nick, rating=3.0, role="Новичок")
+            
         active_players.append(player)
 
     count = len(active_players)
@@ -185,7 +194,7 @@ async def form_teams(game_date: str):
         avg_h = sum(p.height for p in team) / len(team)
         avg_w = sum(p.weight for p in team) / len(team)
         
-        # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Добавляем никнейм в список ---
+        # Формируем список с никами
         players_list_html = []
         for p in team:
             # Если ник есть, добавляем пробел перед ним, иначе пустота
@@ -193,7 +202,6 @@ async def form_teams(game_date: str):
             players_list_html.append(f"- {p.name}{nick_display} (<i>{p.role}, {p.rating}</i>)")
             
         players_list_str = "\n".join(players_list_html)
-        # ----------------------------------------------------
         
         stats_line = f"Ср. рейтинг: {avg_r:.2f} | Ср. рост: {avg_h:.0f}см | Ср. вес: {avg_w:.0f}кг\n"
         
