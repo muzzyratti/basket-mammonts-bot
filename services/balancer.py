@@ -1,11 +1,14 @@
 import random
 import itertools
+from datetime import datetime
 from services.google_sheets import sheets
 
 class Player:
-    def __init__(self, name, nick="", rating=3.0, role="Универсал", height=180, weight=80):
+    def __init__(self, name, nick="", rating=3.0, role="Универсал", height=180, weight=80, raw_time=""):
         self.name = name
-        self.nick = nick  # Сохраняем ник
+        self.nick = nick
+        self.raw_time = raw_time # Строка времени для сортировки
+        
         # Парсим рейтинг
         try:
             self.rating = float(str(rating).split(" ")[0])
@@ -29,52 +32,101 @@ class Player:
     def __repr__(self):
         return f"{self.name} ({self.rating})"
 
+def parse_signup_time(time_str):
+    """
+    Превращает строку времени из Гугла в объект datetime для сортировки.
+    Формат: 28.01.2026 20:19:40
+    """
+    if not time_str:
+        return datetime.max 
+    
+    clean_str = str(time_str).strip()
+    formats = [
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M",
+        "%Y-%m-%d %H:%M:%S",
+        "%H:%M:%S"
+    ]
+    
+    for fmt in formats:
+        try:
+            return datetime.strptime(clean_str, fmt)
+        except ValueError:
+            continue
+            
+    return datetime.max 
+
 async def form_teams(game_date: str):
-    # 1. Голоса (приходят в порядке времени записи)
+    print(f"📥 Начинаем сбор команд на {game_date}")
+    
+    # 1. Голоса (Приходят как есть в таблице - Новые сверху!)
     votes = await sheets.get_votes_for_date(game_date)
     if not votes:
         return None, "❌ Никто не записался."
 
-    # 2. Статистика
+    # 2. Статистика (Лист "Мамонты")
     stats_db = await sheets.get_players_stats()
 
     active_players = []
+    
+    # --- СБОР ДАННЫХ ---
     for v in votes:
-        # Чистим ник от пробелов (важно!)
         current_nick = v.get('nick', '').strip()
         current_tg_name = v['name'].strip()
         
-        # Определяем ключ для поиска
+        # Ищем время
+        signup_time_str = ""
+        for k, val in v.items():
+            if "время" in k.lower() or "time" in k.lower():
+                signup_time_str = val
+                break
+        
+        # 1. МАТЧИНГ ПО НИКУ: Ищем игрока в базе по нику (v['nick'])
         key = current_nick if current_nick in stats_db else current_tg_name
+        
+        # Данные по умолчанию (если не найдем в базе)
+        real_name = current_tg_name
+        rating = 3.0
+        role = "Новичок"
+        height = 180
+        weight = 80
         
         if key in stats_db:
             p_data = stats_db[key]
+            rating = p_data.get('rating', 3.0)
+            role = p_data.get('role', 'Универсал')
+            height = p_data.get('height', 180)
+            weight = p_data.get('weight', 80)
             
-            # --- УМНЫЙ ПОИСК ИМЕНИ ---
-            # Проверяем разные варианты ключей, так как в Гугле могут быть пробелы
-            real_name = current_tg_name # Значение по умолчанию
+            # 2. ПОДТЯГИВАНИЕ ИМЕНИ: Ищем поле "Имя" в базе
+            found_name = False
+            if 'Имя' in p_data and p_data['Имя']:
+                 real_name = str(p_data['Имя']).strip()
+                 found_name = True
             
-            # Список вариантов заголовка столбца "Имя"
-            possible_keys = ['Имя', 'Имя ', 'name', 'Name', 'имя']
-            
-            for pk in possible_keys:
-                if pk in p_data and p_data[pk]:
-                    real_name = str(p_data[pk]).strip()
-                    break
-            # -------------------------
-            
-            player = Player(
-                name=real_name,
-                nick=current_nick,
-                rating=p_data['rating'], 
-                role=p_data['role'], 
-                height=p_data['height'], 
-                weight=p_data['weight']
-            )
-        else:
-            player = Player(name=current_tg_name, nick=current_nick, rating=3.0, role="Новичок")
-            
+            # Запасной поиск имени (если вдруг опечатка в заголовке)
+            if not found_name:
+                for db_key, db_val in p_data.items():
+                    clean_key = str(db_key).lower().strip()
+                    if clean_key in ['имя', 'name', 'fio', 'фио']:
+                        if db_val:
+                            real_name = str(db_val).strip()
+                            found_name = True
+                            break
+
+        player = Player(
+            name=real_name,     # <-- СЮДА попадет имя из листа "Мамонты"
+            nick=current_nick,  # <-- СЮДА попадет ник
+            rating=rating, 
+            role=role, 
+            height=height, 
+            weight=weight,
+            raw_time=signup_time_str
+        )
         active_players.append(player)
+
+    # --- СОРТИРОВКА ПО ВРЕМЕНИ (Кто раньше встал - того и тапки) ---
+    active_players.sort(key=lambda x: parse_signup_time(x.raw_time))
 
     count = len(active_players)
     if count < 4:
@@ -84,23 +136,17 @@ async def form_teams(game_date: str):
     print("⏳ Анализируем историю игр...")
     past_games = await sheets.get_last_games_teams(limit=2, exclude_date=game_date)
     forbidden_pairs = set()
-    
     if len(past_games) >= 2:
-        game1_teams = past_games[0]
-        game2_teams = past_games[1]
-        
-        pairs_g1 = set()
-        for team_set in game1_teams:
-            for pair in itertools.combinations(sorted(list(team_set)), 2):
-                pairs_g1.add(pair)
-        
-        pairs_g2 = set()
-        for team_set in game2_teams:
-            for pair in itertools.combinations(sorted(list(team_set)), 2):
-                pairs_g2.add(pair)
-        
-        forbidden_pairs = pairs_g1.intersection(pairs_g2)
-        print(f"🚫 Найдено нежелательных пар: {len(forbidden_pairs)}")
+        for i in range(2):
+            team_set_list = past_games[i]
+            current_pairs = set()
+            for t_s in team_set_list:
+                for pair in itertools.combinations(sorted(list(t_s)), 2):
+                    current_pairs.add(pair)
+            if i == 0:
+                forbidden_pairs = current_pairs
+            else:
+                forbidden_pairs = forbidden_pairs.intersection(current_pairs)
 
     # --- КОЛИЧЕСТВО КОМАНД ---
     num_teams = 2
@@ -111,33 +157,26 @@ async def form_teams(game_date: str):
     elif count == 9:
         num_teams = 3
     
+    # --- НАРЕЗКА РЕЗЕРВА ---
     reserve_pool = []
     if num_teams == 3 and count > 18:
-        # --- ИСПРАВЛЕНИЕ РЕЗЕРВА ---
-        # Мы НЕ делаем shuffle здесь. 
-        # Список active_players идет по времени записи.
-        # Просто отрезаем последних.
+        # Режем хвост списка (там теперь самые "поздние" игроки)
         reserve_pool = active_players[18:] 
         active_players = active_players[:18]
-        # ---------------------------
 
-    # --- БАЛАНСИРОВКА 2.0 ---
+    # --- БАЛАНСИРОВКА ---
     best_teams = []
     min_total_penalty = 100000 
-    
     iterations = 10000 
     
-    # Копируем список для итераций, чтобы не ломать оригинал
     players_pool = list(active_players)
 
     for _ in range(iterations): 
-        # Перемешиваем ТОЛЬКО тех, кто попал в основу (18 человек)
         random.shuffle(players_pool)
         
         current_teams = [players_pool[i::num_teams] for i in range(num_teams)]
         if any(len(t) == 0 for t in current_teams): continue
 
-        # --- СБОР МЕТРИК ---
         ratings = []
         heights = []
         weights = []
@@ -158,17 +197,13 @@ async def form_teams(game_date: str):
                 if pair in forbidden_pairs:
                     history_violations += 1
 
-        # --- РАСЧЕТ ШТРАФОВ ---
         diff_rating = max(ratings) - min(ratings)
         penalty_history = history_violations * 2.0
         
         diff_bigs = max(bigs_counts) - min(bigs_counts)
         penalty_bigs = 0 if diff_bigs <= 1 else 1.5
-            
         diff_snipers = max(snipers_counts) - min(snipers_counts)
         penalty_snipers = 0 if diff_snipers <= 1 else 0.8
-            
-        # ИСПРАВЛЕНИЕ ОШИБКИ ЗДЕСЬ (назвал переменные правильно)
         penalty_height = (max(heights) - min(heights)) / 15.0 
         penalty_weight = (max(weights) - min(weights)) / 20.0
 
@@ -177,12 +212,12 @@ async def form_teams(game_date: str):
         
         if total_penalty < min_total_penalty:
             min_total_penalty = total_penalty
-            best_teams = [list(t) for t in current_teams] # Копируем структуру
+            best_teams = [list(t) for t in current_teams]
             
             if total_penalty < 0.15:
                 break
 
-    # --- ФОРМИРОВАНИЕ ОТЧЕТА ---
+    # --- ОТЧЕТ ---
     all_names = ["White eggs ⚪️", "Black hole ⚫", "Red Tits 🔴"]
     team_names = all_names[:num_teams]
     
@@ -200,6 +235,7 @@ async def form_teams(game_date: str):
         
         players_list_html = []
         for p in team:
+            # 3. ВЫВОД: Здесь берется имя из базы (p.name) и ник (p.nick)
             nick_display = f" {p.nick}" if p.nick else ""
             players_list_html.append(f"- {p.name}{nick_display} (<i>{p.role}, {p.rating}</i>)")
             
