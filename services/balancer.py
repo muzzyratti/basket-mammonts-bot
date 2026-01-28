@@ -50,8 +50,7 @@ async def form_teams(game_date: str):
         if key in stats_db:
             p_data = stats_db[key]
             
-            # --- ИЗМЕНЕНИЕ: Берем имя из базы (Лист Мамонты), а не из голосования ---
-            # Пробуем найти поле 'Имя', если нет - 'name', если нет - берем из голосования
+            # Берем имя из базы (Лист Мамонты), а не из голосования
             real_name = p_data.get('Имя', p_data.get('name', v['name']))
             
             player = Player(
@@ -105,9 +104,13 @@ async def form_teams(game_date: str):
     
     reserve_pool = []
     if num_teams == 3 and count > 18:
-        random.shuffle(active_players)
-        reserve_pool = active_players[18:]
-        active_players = active_players[:18]
+        # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+        # Мы НЕ перемешиваем игроков перед отсечением резерва.
+        # Так как votes приходят из таблицы по порядку времени, 
+        # последние в списке - это последние записавшиеся.
+        reserve_pool = active_players[18:] # Берем всех после 18-го
+        active_players = active_players[:18] # Берем первых 18
+        # -------------------------
 
     # --- БАЛАНСИРОВКА 2.0 (Спортивная) ---
     best_teams = []
@@ -116,7 +119,9 @@ async def form_teams(game_date: str):
     iterations = 10000 
     
     for _ in range(iterations): 
+        # Перемешивание происходит ТУТ, только внутри отобранных 18 человек
         random.shuffle(active_players)
+        
         current_teams = [active_players[i::num_teams] for i in range(num_teams)]
         if any(len(t) == 0 for t in current_teams): continue
 
