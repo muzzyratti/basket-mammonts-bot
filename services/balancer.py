@@ -3,7 +3,6 @@ import itertools
 from services.google_sheets import sheets
 
 class Player:
-    # Добавил аргумент nick в __init__
     def __init__(self, name, nick="", rating=3.0, role="Универсал", height=180, weight=80):
         self.name = name
         self.nick = nick  # Сохраняем ник
@@ -14,11 +13,11 @@ class Player:
             self.rating = 3.0
             
         self.role = role
-        # Парсим физику (защита от пустых полей)
+        # Парсим физику
         self.height = int(height) if height and str(height).isdigit() else 180
         self.weight = int(weight) if weight and str(weight).isdigit() else 80
 
-        # Упрощаем роль для алгоритма (Нормализация)
+        # Упрощаем роль
         r_lower = role.lower()
         if "большой" in r_lower or "центр" in r_lower:
             self.simple_role = "big"
@@ -31,39 +30,49 @@ class Player:
         return f"{self.name} ({self.rating})"
 
 async def form_teams(game_date: str):
-    # 1. Голоса
+    # 1. Голоса (приходят в порядке времени записи)
     votes = await sheets.get_votes_for_date(game_date)
     if not votes:
         return None, "❌ Никто не записался."
 
-    # 2. Статистика (Лист "Мамонты")
+    # 2. Статистика
     stats_db = await sheets.get_players_stats()
 
     active_players = []
     for v in votes:
-        # Достаем ник из голосов
-        current_nick = v.get('nick', '')
+        # Чистим ник от пробелов (важно!)
+        current_nick = v.get('nick', '').strip()
+        current_tg_name = v['name'].strip()
         
-        # Определяем ключ для поиска в базе
-        key = v['nick'] if v['nick'] in stats_db else v['name']
+        # Определяем ключ для поиска
+        key = current_nick if current_nick in stats_db else current_tg_name
         
         if key in stats_db:
             p_data = stats_db[key]
             
-            # Берем имя из базы (Лист Мамонты), а не из голосования
-            real_name = p_data.get('Имя', p_data.get('name', v['name']))
+            # --- УМНЫЙ ПОИСК ИМЕНИ ---
+            # Проверяем разные варианты ключей, так как в Гугле могут быть пробелы
+            real_name = current_tg_name # Значение по умолчанию
+            
+            # Список вариантов заголовка столбца "Имя"
+            possible_keys = ['Имя', 'Имя ', 'name', 'Name', 'имя']
+            
+            for pk in possible_keys:
+                if pk in p_data and p_data[pk]:
+                    real_name = str(p_data[pk]).strip()
+                    break
+            # -------------------------
             
             player = Player(
-                name=real_name,     # Имя из базы
-                nick=current_nick,  # Передаем ник
+                name=real_name,
+                nick=current_nick,
                 rating=p_data['rating'], 
                 role=p_data['role'], 
                 height=p_data['height'], 
                 weight=p_data['weight']
             )
         else:
-            # Если игрока нет в базе, берем имя из голосования (Телеграм)
-            player = Player(name=v['name'], nick=current_nick, rating=3.0, role="Новичок")
+            player = Player(name=current_tg_name, nick=current_nick, rating=3.0, role="Новичок")
             
         active_players.append(player)
 
@@ -104,25 +113,28 @@ async def form_teams(game_date: str):
     
     reserve_pool = []
     if num_teams == 3 and count > 18:
-        # --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
-        # Мы НЕ перемешиваем игроков перед отсечением резерва.
-        # Так как votes приходят из таблицы по порядку времени, 
-        # последние в списке - это последние записавшиеся.
-        reserve_pool = active_players[18:] # Берем всех после 18-го
-        active_players = active_players[:18] # Берем первых 18
-        # -------------------------
+        # --- ИСПРАВЛЕНИЕ РЕЗЕРВА ---
+        # Мы НЕ делаем shuffle здесь. 
+        # Список active_players идет по времени записи.
+        # Просто отрезаем последних.
+        reserve_pool = active_players[18:] 
+        active_players = active_players[:18]
+        # ---------------------------
 
-    # --- БАЛАНСИРОВКА 2.0 (Спортивная) ---
+    # --- БАЛАНСИРОВКА 2.0 ---
     best_teams = []
     min_total_penalty = 100000 
     
     iterations = 10000 
     
+    # Копируем список для итераций, чтобы не ломать оригинал
+    players_pool = list(active_players)
+
     for _ in range(iterations): 
-        # Перемешивание происходит ТУТ, только внутри отобранных 18 человек
-        random.shuffle(active_players)
+        # Перемешиваем ТОЛЬКО тех, кто попал в основу (18 человек)
+        random.shuffle(players_pool)
         
-        current_teams = [active_players[i::num_teams] for i in range(num_teams)]
+        current_teams = [players_pool[i::num_teams] for i in range(num_teams)]
         if any(len(t) == 0 for t in current_teams): continue
 
         # --- СБОР МЕТРИК ---
@@ -131,7 +143,6 @@ async def form_teams(game_date: str):
         weights = []
         bigs_counts = []
         snipers_counts = []
-        
         history_violations = 0
 
         for team in current_teams:
@@ -152,33 +163,20 @@ async def form_teams(game_date: str):
         penalty_history = history_violations * 2.0
         
         diff_bigs = max(bigs_counts) - min(bigs_counts)
-        penalty_bigs = 0
-        if diff_bigs > 1:
-            penalty_bigs = 1.5 
+        penalty_bigs = 0 if diff_bigs <= 1 else 1.5
             
         diff_snipers = max(snipers_counts) - min(snipers_counts)
-        penalty_snipers = 0
-        if diff_snipers > 1:
-            penalty_snipers = 0.8
+        penalty_snipers = 0 if diff_snipers <= 1 else 0.8
             
-        diff_height = max(heights) - min(heights)
-        penalty_height = diff_height / 15.0 
-        
-        diff_weight = max(weights) - min(weights)
-        penalty_weight = diff_weight / 20.0
+        diff_height = (max(heights) - min(heights)) / 15.0 
+        diff_weight = (max(weights) - min(weights)) / 20.0
 
-        total_penalty = (
-            diff_rating + 
-            penalty_history + 
-            penalty_bigs + 
-            penalty_snipers + 
-            penalty_height + 
-            penalty_weight
-        )
+        total_penalty = (diff_rating + penalty_history + penalty_bigs + 
+                         penalty_snipers + penalty_height + penalty_weight)
         
         if total_penalty < min_total_penalty:
             min_total_penalty = total_penalty
-            best_teams = current_teams
+            best_teams = [list(t) for t in current_teams] # Копируем структуру
             
             if total_penalty < 0.15:
                 break
@@ -199,10 +197,8 @@ async def form_teams(game_date: str):
         avg_h = sum(p.height for p in team) / len(team)
         avg_w = sum(p.weight for p in team) / len(team)
         
-        # Формируем список с никами
         players_list_html = []
         for p in team:
-            # Если ник есть, добавляем пробел перед ним, иначе пустота
             nick_display = f" {p.nick}" if p.nick else ""
             players_list_html.append(f"- {p.name}{nick_display} (<i>{p.role}, {p.rating}</i>)")
             
