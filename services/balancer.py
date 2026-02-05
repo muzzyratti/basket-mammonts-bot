@@ -100,12 +100,14 @@ async def form_teams(game_date: str):
         clean_id = str(p_id).strip()
         players_by_id[clean_id] = p_data
 
-        # Ищем ник (пробуем разные варианты названия колонки)
+        # Ищем ник
         p_nick = get_val_smart(p_data, ['ник', 'nick', 'nickname'])
         
         if p_nick:
             clean_nick = str(p_nick).replace("@", "").strip().lower()
-            if clean_nick:
+            # ВАЖНО: Если ник = "nonick", мы его НЕ индексируем.
+            # Тогда поиск пойдет по ID или по Имени.
+            if clean_nick and clean_nick != 'nonick':
                 players_by_nick[clean_nick] = p_data
 
     active_players = []
@@ -128,6 +130,14 @@ async def form_teams(game_date: str):
              found_data = players_by_id[vote_id]
         elif vote_nick_clean and vote_nick_clean in players_by_nick:
             found_data = players_by_nick[vote_nick_clean]
+        # ДОБАВЛЯЕМ ЭТОТ БЛОК:
+        elif vote_name: 
+            # Если по ID и Нику не нашли (или ника нет), ищем точное совпадение Имени
+            for p in stats_db.values():
+                db_name = get_val_smart(p, ['имя', 'name'])
+                if str(db_name).lower().strip() == vote_name.lower():
+                    found_data = p
+                    break
         
         # Применяем данные
         final_name = vote_name

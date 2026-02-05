@@ -122,23 +122,58 @@ class GoogleSheetsService:
 
     async def get_votes_for_date(self, date_str: str):
         """
-        Получает список тех, кто идет, на конкретную дату.
+        Получает список тех, кто АКТУАЛЬНО записан на игру.
+        Разделяет людей с NoNick по именам.
         """
         ws = await self._get_ws("Голосования")
         records = await ws.get_all_records()
         
+        final_status = {}
+        
+        from datetime import datetime
+        def parse_vote_time(t_str):
+            try: return datetime.strptime(str(t_str).strip(), "%d.%m.%Y %H:%M:%S")
+            except: return datetime.min
+
+        day_records = [r for r in records if r.get('Дата игры') == date_str]
+        # Сортируем от старых к новым
+        day_records.sort(key=lambda x: parse_vote_time(x.get('Время записи')))
+
+        for row in day_records:
+            nick = str(row.get('Ник', '')).strip()
+            name = str(row.get('Имя', '')).strip()
+            
+            # ОПРЕДЕЛЕНИЕ КЛЮЧА
+            # Считаем ник валидным, только если это не пустая строка и не "nonick"
+            is_valid_nick = nick and nick.lower() != 'nonick'
+            
+            if is_valid_nick:
+                user_key = nick.lower()
+            else:
+                # Если ника нет или он NoNick -> ключом становится ИМЯ
+                # Это разделит "Николая" и "First Name"
+                user_key = name.lower()
+            
+            if not user_key: continue
+            
+            vote_text = row.get('Голос', '')
+            
+            if "Я воин мяча" in vote_text:
+                if user_key in final_status and final_status[user_key]['status'] == 'active':
+                    continue 
+                final_status[user_key] = { 'status': 'active', 'data': row }
+            else:
+                final_status[user_key] = { 'status': 'cancelled', 'data': row }
+
         players_in = []
-        for row in records:
-            if row.get('Дата игры') == date_str and "Я воин мяча" in row.get('Голос'):
-                # Возвращаем ВСЕ поля, чтобы main.py мог найти время и ID
-                player_info = row 
-                # Если в CSV нет ключей 'name'/'nick' на английском, добавим их вручную
-                player_info['name'] = row.get('Имя')
-                player_info['nick'] = row.get('Ник')
-                # Время записи тоже важно
-                player_info['time'] = row.get('Время записи')
+        for info in final_status.values():
+            if info['status'] == 'active':
+                row = info['data']
+                row['name'] = row.get('Имя')
+                row['nick'] = row.get('Ник')
+                row['time'] = row.get('Время записи')
+                players_in.append(row)
                 
-                players_in.append(player_info)
         return players_in
 
     async def save_teams_batch(self, teams_data: list):
